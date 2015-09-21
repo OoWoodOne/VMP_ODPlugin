@@ -1,0 +1,257 @@
+VAR Data_Buffer
+VAR VM_GetHash
+VAR VM_ReadDs32
+VAR VM_PopR32
+VAR VM_Retn
+VAR VM_Rdtsc
+VAR VM_OpcodeLoad
+
+VAR Addr_MapViewOfFile
+VAR Addr_ZwTerminateProcess
+VAR Addr_Check_Vmware
+
+VAR Esp_Change
+VAR RdtscEax
+VAR RdtscEdx
+
+
+VAR Hash_Table_Count
+VAR Code_Hash_End
+VAR Code_Hash_Size
+VAR Mem_Hash_End
+VAR Mem_Hash_Size
+
+VAR Hash_EIP
+VAR Hash_Addr
+VAR Hash_Size
+VAR Hash_Value
+VAR Hash_Table_Base
+VAR Hash_Table_Size
+VAR Hash_Table_Value
+VAR Hash_IsRdtsc
+
+VAR Hash_Pad
+
+VAR Run_Mode
+MSGYN "Fast mode?"
+MOV Run_Mode,$RESULT
+
+MOV Hash_Table_Count,0
+CALL VAR_INIT
+//PAUSE
+//check exit
+GPA "ZwTerminateProcess","ntdll.dll"
+MOV Addr_ZwTerminateProcess,$RESULT
+
+CALL GET_INPUT
+MOV VM_GetHash,[Data_Buffer]
+MOV VM_ReadDs32,[Data_Buffer+4]
+MOV VM_PopR32,[Data_Buffer+8]
+MOV VM_Retn,[Data_Buffer+C]
+MOV VM_Rdtsc,[Data_Buffer+10]
+MOV VM_OpcodeLoad,[Data_Buffer+14]
+MOV Hash_Pad,Data_Buffer+200
+
+BC
+BPHWCALL
+
+BP Addr_ZwTerminateProcess
+
+BPHWS VM_GetHash,"x"
+BP VM_Retn
+CHECK_VMWARE_LOOP:
+RUN
+CMP eip,VM_Retn
+JNE CHECK_VMWARE_END
+TICND "BYTE PTR[eip]==0xC2"
+TC
+MOV tmp,[esp]
+MOV tmp,[tmp],1
+CMP tmp,000000ED
+JNE CHECK_VMWARE_LOOP
+MOV Addr_Check_Vmware,[esp]
+GO Addr_Check_Vmware
+MOV [Addr_Check_Vmware],CC,1
+GO [esp+4]
+MOV [Addr_Check_Vmware],ED,1
+BC VM_Retn
+BPHWC VM_GetHash
+BP VM_OpcodeLoad
+RUN
+BC VM_OpcodeLoad
+GO VM_GetHash
+
+CHECK_VMWARE_END:
+BC VM_Retn
+BPHWC VM_GetHash
+
+MOV Hash_EIP,esi
+MOV Hash_Addr,[ebp]
+MOV Hash_Size,[ebp+4]
+MOV Esp_Change,esp
+GO VM_OpcodeLoad
+SUB Esp_Change,esp
+BPHWS VM_Rdtsc,"x"
+
+JMP CHECK_HASH_DO
+
+CHECK_HASH_LOOP:
+GO VM_GetHash
+CMP eip,VM_GetHash
+JNE CHECK_RDTSC
+CMP esi,Hash_EIP
+JE INC_HASH_TABLE_SIZE
+CALL HASH_FINISH
+MOV Hash_EIP,esi
+MOV Hash_Addr,[ebp]
+MOV Hash_Size,[ebp+4]
+GO VM_OpcodeLoad
+CMP eip,VM_OpcodeLoad
+JNE ERROR
+CHECK_HASH_DO:
+MOV Hash_Value,[ebp]
+CMP Hash_IsRdtsc,0
+JE READDS32
+MOV Hash_IsRdtsc,0
+JMP CHECK_HASH_LOOP
+
+READDS32:
+GO VM_ReadDs32
+CMP eip,VM_ReadDs32
+JNE ERROR
+MOV Hash_Table_Base,[ebp]
+MOV Hash_Table_Value,[Hash_Table_Base]
+SUB Hash_Table_Base,8
+INC Hash_Table_Count
+BP VM_OpcodeLoad
+RUN
+BC VM_OpcodeLoad
+CMP Run_Mode,0
+JE INC_HASH_TABLE_SIZE
+CMP Hash_Table_Count,1
+JE INC_HASH_TABLE_SIZE
+CMP Hash_Table_Count,2
+JNE READDS32_L0
+MOV Code_Hash_End,Hash_Addr
+ADD Code_Hash_End,Hash_Size
+SUB Code_Hash_End,4
+MOV Code_Hash_Size,Hash_Size
+JMP INC_HASH_TABLE_SIZE
+READDS32_L0:
+CMP Hash_Table_Count,3
+JNE READDS32_L1
+BPHWS Code_Hash_End,"r"
+RUN
+BPHWC Code_Hash_End
+MOV Hash_Table_Size,Code_Hash_Size
+JMP CHECK_HASH_LOOP
+READDS32_L1:
+CMP Hash_Table_Count,4
+JNE READDS32_L2
+MOV Mem_Hash_End,Hash_Addr
+ADD Mem_Hash_End,Hash_Size
+SUB Mem_Hash_End,4
+MOV Mem_Hash_Size,Hash_Size
+JMP INC_HASH_TABLE_SIZE
+READDS32_L2:
+CMP Hash_Table_Count,5
+JNE INC_HASH_TABLE_SIZE
+BPHWS Mem_Hash_End,"r"
+RUN
+BPHWC Mem_Hash_End
+MOV Hash_Table_Size,Mem_Hash_Size
+
+INC_HASH_TABLE_SIZE:
+INC Hash_Table_Size
+JMP CHECK_HASH_LOOP
+
+
+HASH_FINISH:
+CMP Hash_EIP,0
+JE HASH_FINISH_RET
+CALL LOG_HASH_INFO
+CALL VAR_INIT
+HASH_FINISH_RET:
+ret
+
+LOG_HASH_INFO:
+MOV [Hash_Pad],Hash_EIP
+MOV [Hash_Pad+4],Hash_Value
+MOV [Hash_Pad+8],Hash_Table_Base
+MOV [Hash_Pad+C],Hash_Table_Size
+MOV [Hash_Pad+10],Hash_Table_Value
+ADD Hash_Pad,14
+LOG Hash_EIP
+LOG Hash_Addr
+LOG Hash_Size
+LOG Hash_Value
+LOG Hash_Table_Base
+LOG Hash_Table_Size
+LOG Hash_Table_Value
+LOG " "
+RET
+
+
+VAR_INIT:
+MOV Hash_EIP,0
+MOV Hash_Addr,0
+MOV Hash_Size,0
+MOV Hash_Value,0
+MOV Hash_Table_Base,0
+MOV Hash_Table_Size,0
+MOV Hash_Table_Value,0
+RET
+
+
+
+ERROR:
+BC
+BPHWCALL
+MSG "Script execute error!"
+RET
+
+CHECK_RDTSC:
+CMP eip,VM_Rdtsc
+JNE SAFE_EXIT
+//pause
+TICND "WORD PTR[eip]==0x310F"
+TC
+STI
+CALL HASH_FINISH
+MOV Hash_IsRdtsc,1
+CMP RdtscEax,0
+JNE FIX_RDTSC
+MOV RdtscEax,eax
+MOV RdtscEdx,edx
+JMP CHECK_HASH_LOOP
+FIX_RDTSC:
+MOV eax,RdtscEax
+MOV edx,RdtscEdx
+JMP CHECK_HASH_LOOP
+
+SAFE_EXIT:
+CMP eip,Addr_ZwTerminateProcess
+JNE EXIT
+CMP [esp+4],FFFFFFFF
+JNE CHECK_HASH_LOOP
+
+EXIT:
+CALL LOG_HASH_INFO
+
+MOV [Data_Buffer+800],Esp_Change
+MOV [Data_Buffer+804],Addr_Check_Vmware
+MOV [Data_Buffer+808],RdtscEax
+MOV [Data_Buffer+80C],RdtscEdx
+LOG Esp_Change
+LOG Addr_Check_Vmware
+LOG RdtscEax
+LOG RdtscEdx
+BC
+BPHWCALL
+LOG "Get VMP hash info finished!"
+MSG "Get VMP hash info finished!"
+RET
+
+
+GET_INPUT:
+

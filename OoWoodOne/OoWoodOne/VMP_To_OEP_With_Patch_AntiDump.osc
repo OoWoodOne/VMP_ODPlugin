@@ -1,0 +1,365 @@
+CMP [eip-1],CC,1
+JE Start
+BC 
+BPHWCALL
+MSG "请设置第一次暂停在[系统断点]，并重启程序运行脚本"
+PAUSE
+RET
+
+Start:
+VAR ModuleBase
+VAR ModuleSize
+VAR ModuleEnd
+VAR Addr_Check_Vmware
+VAR Local_AntiDump_Store
+VAR Heap_AntiDump_Store
+VAR Resource_AntiDump_Store
+VAR New_IAT_Store
+VAR ShellCode_Store
+VAR Resource_AntiDump_Count
+VAR API_Patch_Addr
+
+VAR LocalAlloc
+VAR HeapCreate
+VAR VirtualProtect
+VAR VirtualAlloc
+VAR VM_Retn
+VAR EntryPoint
+
+VAR FindOEP
+
+GPI EXEFILENAME
+eval "{$RESULT}_Log.txt"
+MOV LogFile,$RESULT
+
+GPI MAINBASE
+MOV ModuleBase,$RESULT
+GMI ModuleBase,MODULESIZE
+MOV ModuleSize,$RESULT
+LOG ModuleBase
+LOG ModuleSize
+MOV ModuleEnd,ModuleBase
+ADD ModuleEnd,ModuleSize
+CALL GET_INPUT
+ADD VM_Retn,ModuleBase
+ADD EntryPoint,ModuleBase
+
+ALLOC 1000
+MOV API_Patch_Addr,$RESULT
+
+GPA "LocalAlloc","kernel32.dll"
+MOV LocalAlloc,API_Patch_Addr
+MOV P_API_Addr,$RESULT
+MOV P_Patch_Addr,LocalAlloc
+CALL PATCH_API
+GPA "HeapCreate","kernel32.dll"
+MOV HeapCreate,API_Patch_Addr+20
+MOV P_API_Addr,$RESULT
+MOV P_Patch_Addr,HeapCreate
+CALL PATCH_API
+GPA "VirtualProtect","kernel32.dll"
+MOV VirtualProtect,API_Patch_Addr+40
+MOV P_API_Addr,$RESULT
+MOV P_Patch_Addr,VirtualProtect
+CALL PATCH_API
+GPA "VirtualAlloc","kernel32.dll"
+MOV VirtualAlloc,API_Patch_Addr+60
+MOV P_API_Addr,$RESULT
+MOV P_Patch_Addr,VirtualAlloc
+CALL PATCH_API
+JMP MAIN
+
+PATCH_API:
+MOV P_Patch_Size_Total,0
+MOV P_API_Addr_Mark,P_API_Addr
+MOV P_Patch_Addr_Mark,P_Patch_Addr
+PATCH_API_LOOP:
+OPCODE P_API_Addr_Mark
+MOV P_Patch_Cmd,$RESULT_1
+MOV P_Patch_Size,$RESULT_2
+ASM P_Patch_Addr_Mark,P_Patch_Cmd
+ADD P_Patch_Addr_Mark,$RESULT
+ADD P_Patch_Size_Total,P_Patch_Size
+ADD P_API_Addr_Mark,P_Patch_Size
+CMP P_Patch_Size_Total,5
+JB PATCH_API_LOOP
+EVAL "JMP {P_Patch_Addr}"
+ASM P_API_Addr,$RESULT
+EVAL "JMP {P_API_Addr_Mark}"
+ASM P_Patch_Addr_Mark,$RESULT
+RET
+
+
+MAIN:
+CALL ALLOC_PAD
+BC
+BPHWCALL
+GO EntryPoint
+
+BP LocalAlloc
+BP HeapCreate
+BP VirtualProtect
+BP VirtualAlloc
+BPHWS VM_Retn
+
+MAIN_LOOP:
+RUN
+MAIN_LOOP_DO:
+CMP eip,VirtualAlloc
+JE VirtualAlloc_DO
+CMP eip,LocalAlloc
+JE LocalAlloc_DO
+CMP eip,HeapCreate
+JE HeapCreate_DO
+CMP eip,VirtualProtect
+JE VirtualProtect_DO
+CMP eip,VM_Retn
+JE VM_Retn_DO
+MSG "ERROR"
+RET
+
+
+VirtualAlloc_DO:
+RTR
+CMP eax,0
+JE MAIN_LOOP
+CMP Resource_AntiDump_Count,0
+JNE VirtualAlloc_DO_0
+INC Resource_AntiDump_Count
+MOV eax,Resource_AntiDump_Store
+LOG Resource_AntiDump_Count
+JMP MAIN_LOOP
+VirtualAlloc_DO_0:
+INC Resource_AntiDump_Count
+MOV eax,Resource_AntiDump_Store+100
+LOG Resource_AntiDump_Count
+BC VirtualAlloc
+JMP MAIN_LOOP
+
+
+
+VM_Retn_DO:
+TICND "BYTE PTR[eip]==0xC2"
+TC
+MOV tmp,[esp]
+MOV tmp,[tmp],1
+CMP tmp,000000ED
+JNE MAIN_LOOP
+BPHWC VM_Retn
+MOV Addr_Check_Vmware,[esp]
+LOG Addr_Check_Vmware
+GO Addr_Check_Vmware
+MOV [Addr_Check_Vmware],CC,1
+GO [esp+4]
+MOV [Addr_Check_Vmware],ED,1
+JMP MAIN_LOOP
+
+
+LocalAlloc_DO:
+CMP [esp],ModuleBase
+JB MAIN_LOOP
+CMP [esp],ModuleEnd
+JAE MAIN_LOOP
+CMP [esp+8],68
+JE PATCH_LocalAlloc_ANTIDUMP
+CMP [esp+8],64
+JNE MAIN_LOOP
+PATCH_LocalAlloc_ANTIDUMP:
+BC LocalAlloc
+RTR
+MOV eax,Local_AntiDump_Store
+LOG Local_AntiDump_Store
+JMP MAIN_LOOP
+
+
+HeapCreate_DO:
+CMP [esp],ModuleBase
+JB MAIN_LOOP
+CMP [esp],ModuleEnd
+JAE MAIN_LOOP
+BC HeapCreate
+BP [esp]
+RUN
+BC eip
+MOV eax,Heap_AntiDump_Store
+LOG Heap_AntiDump_Store
+JMP MAIN_LOOP
+
+
+VirtualProtect_DO:
+CMP [esp],ModuleBase
+JB MAIN_LOOP
+CMP [esp],ModuleEnd
+JAE MAIN_LOOP
+CMP [esp+C],20
+JNE MAIN_LOOP
+BC VirtualProtect
+BP VM_Retn
+RUN
+BC VM_Retn
+TICND "BYTE PTR[eip]==0xC2"
+TC
+CMP [esp],ModuleBase
+JB OEP_OUTSIDE
+CMP [esp],ModuleEnd
+JAE OEP_OUTSIDE
+STI
+CMT eip,"OEP or near OEP"
+JMP EXIT
+OEP_OUTSIDE:
+STI
+CMT eip,"OEP sub call"
+
+EXIT:
+BPHWCALL
+BC
+MOV FindOEP,eip
+CALL PATCH_RES
+GPI PROCESSID
+MOV ProcessID,$RESULT
+MOV CodeStart,ModuleBase+1000
+MOV OEPRVA,FindOEP-ModuleBase
+GMEMI Local_AntiDump_Store,MEMORYSIZE
+MOV PatchCodeStart,ShellCode_Store
+MOV PatchCodeEnd,ShellCode_Store+B0
+MOV PatchSegmentSize,$RESULT
+MOV PatchSegEnd,Local_AntiDump_Store+PatchSegmentSize
+//EVAL "PatchSeg&{Local_AntiDump_Store}-{PatchSegEnd}.dmp"
+//DM Local_AntiDump_Store,PatchSegmentSize,$RESULT
+EVAL "NewOEP: {FindOEP}(VA:{OEPRVA})\r\nOEP(near): {eip} \r\nProcess ID: {ProcessID}\r\nCode Start: {CodeStart}\r\nCode End: {ModuleEnd}\r\nPatch Code Start: {PatchCodeStart}\r\nPatch Code End: {PatchCodeEnd}\r\nNew IAT Store: {New_IAT_Store}\r\nPatch Segment Base: {Local_AntiDump_Store}\r\nPatch Segment Size: {$RESULT}"
+MOV eip,FindOEP
+WRT LogFile,$RESULT
+LOG $RESULT
+MSG $RESULT
+RET
+
+PATCH_RES:
+CMP Resource_AntiDump_Count,2
+JNE PATCH_RES_EXIT
+MOV [ShellCode_Store-5],#9090909090#
+MOV [ShellCode_Store],#609CB801211C7790B900000000BA00000000E844000000B8E4201C7790B900000000BA00000000E82F000000B821DB847690B900000000BA00000000E81A000000B8B98E847690B900000000BA00000000E805000000E93A00000060E804000000909090906A406A0550E8A83F2F749061894114FF308F4108FF70048F410CC600E92BD083EA05895001FF308F01FF70048F4104C39D6190909090909090909090909090909090E954FCE8FE#
+GPA "LdrFindResource_U","ntdll.dll"
+MOV TMP,$RESULT
+MOV [ShellCode_Store+3],TMP
+ADD TMP,[TMP+1]
+ADD TMP,5
+MOV [ShellCode_Store+E],TMP
+MOV [ShellCode_Store+9],Resource_AntiDump_Store+30
+GPA "LdrAccessResource","ntdll.dll"
+MOV TMP,$RESULT
+MOV [ShellCode_Store+18],TMP
+ADD TMP,[TMP+1]
+ADD TMP,5
+MOV [ShellCode_Store+23],TMP
+MOV [ShellCode_Store+1E],Resource_AntiDump_Store+90
+GPA "LoadStringA","user32.dll"
+MOV TMP,$RESULT
+MOV [ShellCode_Store+2D],TMP
+GPA "LoadStringA","KERNELBASE.dll"
+CMP $RESULT,0
+JE PATCH_RES_LoadStringA
+MOV TMP,$RESULT
+PATCH_RES_LoadStringA:
+ADD TMP,[TMP+1]
+ADD TMP,5
+MOV [ShellCode_Store+38],TMP
+MOV [ShellCode_Store+33],Resource_AntiDump_Store+130
+GPA "LoadStringW","user32.dll"
+MOV TMP,$RESULT
+MOV [ShellCode_Store+42],TMP
+GPA "LoadStringW","KERNELBASE.dll"
+CMP $RESULT,0
+JE PATCH_RES_LoadStringW
+MOV TMP,$RESULT
+PATCH_RES_LoadStringW:
+ADD TMP,[TMP+1]
+ADD TMP,5
+MOV [ShellCode_Store+4D],TMP
+MOV [ShellCode_Store+48],Resource_AntiDump_Store+190
+
+GPA "VirtualProtect","kernel32.dll"
+MOV TMP,$RESULT
+SUB TMP,ShellCode_Store+6F
+MOV [ShellCode_Store+6B],TMP
+
+//to oep
+MOV TMP,FindOEP
+SUB TMP,ShellCode_Store+AC
+MOV [ShellCode_Store+A8],TMP
+MOV FindOEP,ShellCode_Store
+
+MOV [Resource_AntiDump_Store],#EB469090909090909090909090909090909090909090909090909090909090909090909090E97E000000#
+MOV RES_API_PATCH_ADDR,Resource_AntiDump_Store+30
+CALL PATCH_RES_API
+MOV RES_API_PATCH_ADDR,Resource_AntiDump_Store+90
+CALL PATCH_RES_API
+MOV [Resource_AntiDump_Store+100],#EB469090909090909090909090909090909090909090909090909090909090909090909090E97E000000#
+MOV RES_API_PATCH_ADDR,Resource_AntiDump_Store+130
+CALL PATCH_RES_API
+MOV RES_API_PATCH_ADDR,Resource_AntiDump_Store+190
+CALL PATCH_RES_API
+
+PATCH_RES_EXIT:
+RET
+
+
+PATCH_RES_API:
+MOV [RES_API_PATCH_ADDR],#0000000000000000000000000000000000000000000000008F055001170150FF355401170158FF35480117018F00FF354C0117018F400458FF155401170150FF355401170158FF35400117018F00FF35440117018F400458FF3550011701C3#
+MOV [RES_API_PATCH_ADDR+1A],RES_API_PATCH_ADDR+10
+MOV [RES_API_PATCH_ADDR+21],RES_API_PATCH_ADDR+14
+MOV [RES_API_PATCH_ADDR+28],RES_API_PATCH_ADDR+8
+MOV [RES_API_PATCH_ADDR+30],RES_API_PATCH_ADDR+C
+MOV [RES_API_PATCH_ADDR+3A],RES_API_PATCH_ADDR+14
+MOV [RES_API_PATCH_ADDR+41],RES_API_PATCH_ADDR+14
+MOV [RES_API_PATCH_ADDR+48],RES_API_PATCH_ADDR
+MOV [RES_API_PATCH_ADDR+50],RES_API_PATCH_ADDR+4
+MOV [RES_API_PATCH_ADDR+5A],RES_API_PATCH_ADDR+10
+RET
+
+
+
+ALLOC_PAD:
+PUSHA
+ALLOC_LOOP:
+exec
+push 0x40
+push 0x2000
+push 0x20000
+push 0
+call VirtualAlloc
+ende
+CMP ModuleEnd,eax
+JA ALLOC_LOOP
+exec
+push 0x40
+push 0x1000
+push 0x1000
+push eax
+call VirtualAlloc
+ende
+MOV Local_AntiDump_Store,eax
+MOV Resource_AntiDump_Store,Local_AntiDump_Store+100
+MOV ShellCode_Store,Resource_AntiDump_Store+200
+MOV New_IAT_Store,ShellCode_Store+500
+ADD eax,1000
+exec
+push 0x40
+push 0x1000
+push 0x6000
+push eax
+call VirtualAlloc
+add  eax,0x1000
+push 0x0
+push 0x0
+push 0x5000
+push 0x10000
+push eax
+push 0
+call RtlCreateHeap
+ende
+MOV Heap_AntiDump_Store,eax
+POPA
+RET
+
+GET_INPUT:
+
